@@ -33,6 +33,16 @@ def douyin_to_text(share_text: str, force: bool = False) -> dict:
 
 
 @mcp.tool()
+def video_file_to_text(path: str, title: str | None = None, force: bool = False) -> dict:
+    """把本机上的视频或音频文件转成逐字稿，用于视频号、录屏等没有抖音链接的素材。
+
+    path 是本机绝对路径，例如用 wx_channels_download 下载的视频号 mp4。
+    同一文件（按内容哈希）第二次请求直接读缓存；force=True 强制重新转写。
+    """
+    return pipeline.run_file_safe(path, title=title, force=force)
+
+
+@mcp.tool()
 def douyin_list_local(limit: int = 20) -> list[dict]:
     """列出本地素材库里最近处理过的作品（标题、作者、时长、目录），不含逐字稿正文。"""
     return pipeline.list_local(limit)

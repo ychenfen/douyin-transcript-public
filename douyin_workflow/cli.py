@@ -1,6 +1,7 @@
 """命令行入口。
 
     python -m douyin_workflow run "<分享口令>"      # 下载 + 转写，打印逐字稿
+    python -m douyin_workflow file video.mp4         # 本地视频转写（视频号等先下载到本机）
     python -m douyin_workflow list                   # 本地素材库
     python -m douyin_workflow healthcheck            # 逐个后端测固定链接，失败推送告警
 
@@ -36,6 +37,19 @@ def cmd_run(args) -> int:
     else:
         print(f"# {res.get('title')}\n作者：{res.get('author')}  时长：{res.get('duration_s')}s  "
               f"后端：{res.get('backend')}{'（缓存）' if res.get('cached') else ''}\n")
+        print(res["transcript"])
+    return 0
+
+
+def cmd_file(args) -> int:
+    from .pipeline import file_to_text
+
+    res = file_to_text(args.path, title=args.title, force=args.force)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(f"# {res.get('title')}\n时长：{res.get('duration_s')}s  "
+              f"文件：{res.get('source_file')}{'（缓存）' if res.get('cached') else ''}\n")
         print(res["transcript"])
     return 0
 
@@ -133,6 +147,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--force", action="store_true", help="忽略缓存重新处理")
     r.add_argument("--json", action="store_true", help="输出完整 JSON")
     r.set_defaults(func=cmd_run)
+
+    f = sub.add_parser("file", help="转写本地视频或音频文件（视频号、录屏等）")
+    f.add_argument("path")
+    f.add_argument("--title", help="写进素材库的标题，默认用文件名")
+    f.add_argument("--force", action="store_true", help="忽略缓存重新转写")
+    f.add_argument("--json", action="store_true", help="输出完整 JSON")
+    f.set_defaults(func=cmd_file)
 
     ls = sub.add_parser("list", help="列出本地素材库")
     ls.add_argument("--limit", type=int, default=20)

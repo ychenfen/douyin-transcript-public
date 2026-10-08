@@ -7,6 +7,7 @@
 ## 功能
 
 - 抖音分享口令或短链解析
+- 本地视频/音频文件转写（视频号、录屏等没有抖音链接的素材）
 - 匿名 Chromium、iesdouyin、yt-dlp 多后端降级下载
 - SenseVoice / FunASR 中文语音转写与作品级缓存
 - 手机网页校对、复制、TXT 下载和最近处理记录
@@ -41,6 +42,24 @@ DOUYIN_REQUIRE_AUTH=1 DOUYIN_SERVER_TOKEN='<从钥匙串或环境注入>' \
 ```
 
 浏览器口令仅写入 `sessionStorage`，关闭标签页后失效；免密码模式不读取、不保存也不发送 Authorization。
+
+## 视频号与本地视频转写
+
+视频号没有公开下载接口，服务器拿不到视频，所以分两步：先在自己电脑上把视频下载成 mp4，再交给本项目转写。
+
+1. 下载：用开源工具 [wx_channels_download](https://github.com/ltaoo/wx_channels_download)（Windows / macOS）。装好后电脑版微信的视频号播放器会多一个下载按钮。它会安装本地证书并修改系统代理，首次运行需要管理员权限，请只从官方 Releases 获取。录屏得到的视频也可以直接用。
+2. 转写：
+
+```bash
+.venv/bin/python -m douyin_workflow file ~/Downloads/某视频号.mp4 --title "冲刺阶段建议"
+```
+
+- 支持 ffmpeg 能读的任何视频或音频格式，原文件只读不动。
+- 按文件内容 SHA-256 缓存，结果写入 `<数据目录>/file-<哈希前16位>/`，和抖音作品一起出现在 `list` 里。
+- `--force` 重新转写，`--json` 输出完整元数据。
+- MCP 工具 `video_file_to_text(path, title, force)` 做同样的事，可以在 Claude 里直接给本机路径。
+
+网页端暂不支持上传文件：公网入口有 64 KiB 请求体上限，开放上传需要单独评估容量和滥用风险。
 
 ## 独立生产部署
 
