@@ -111,12 +111,22 @@ def file_to_text(
     src = Path(path).expanduser()
     if not src.is_file():
         raise TranscribeError(f"找不到文件：{src}")
-    digest = _sha256(src)
+    try:
+        digest = _sha256(src)
+    except OSError as e:
+        raise TranscribeError(f"读不了文件：{e}") from e
     item_id = f"file-{digest[:16]}"
     item_dir = settings.data_dir / item_id
 
     if not force and (cached := load_cached(item_dir)):
         log.info("命中缓存 %s", item_id)
+        # 同一内容换了标题或文件名：只更新元数据，不重新转写
+        updates = {"source_file": src.name, **({"title": title} if title else {})}
+        if any(cached.get(k) != v for k, v in updates.items()):
+            meta_path = item_dir / "meta.json"
+            meta = {**json.loads(meta_path.read_text(encoding="utf-8")), **updates}
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            cached.update(updates)
         return cached
 
     item_dir.mkdir(parents=True, exist_ok=True)

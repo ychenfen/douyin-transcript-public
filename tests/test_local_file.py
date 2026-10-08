@@ -79,3 +79,31 @@ def test_cli_file(tmp_path, settings, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "# 标题" in out and "视频号逐字稿。" in out
     assert cli.main(["file", str(tmp_path / "missing.mp4")]) == 3
+
+
+def test_cache_hit_updates_title_and_filename(tmp_path, settings):
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    a.write_bytes(b"same")
+    b.write_bytes(b"same")
+    pipeline.file_to_text(a, title="旧标题", settings=settings)
+    res = pipeline.file_to_text(b, title="新标题", settings=settings)
+    assert res["cached"] is True and res["title"] == "新标题" and res["source_file"] == "b.mp4"
+    assert len(settings.calls) == 1
+    [m] = pipeline.list_local(settings=settings)
+    assert m["title"] == "新标题"
+    # 不给标题时保留已有标题
+    assert pipeline.file_to_text(b, settings=settings)["title"] == "新标题"
+
+
+def test_unreadable_file_is_cli_error(tmp_path, settings, monkeypatch):
+    monkeypatch.setattr(pipeline, "get_settings", lambda: settings)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"v")
+
+    def boom(p):
+        raise PermissionError("权限不足")
+
+    monkeypatch.setattr(pipeline, "_sha256", boom)
+    with pytest.raises(TranscribeError, match="读不了文件"):
+        pipeline.file_to_text(video, settings=settings)
+    assert cli.main(["file", str(video)]) == 3
