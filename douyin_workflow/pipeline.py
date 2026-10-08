@@ -1,5 +1,8 @@
 """主流程：分享口令 → 作品 ID → 下载（降级）→ 抽音频 → 转写 → 落盘。
 
+本地视频（视频号、录屏等先下载到本机的文件）走 file_to_text：跳过下载，
+按文件 SHA-256 前 16 位建目录 <data_dir>/file-<hash>/，同一文件再次请求读缓存。
+
 每条视频一个目录 <data_dir>/<aweme_id>/：
   meta.json       标题、作者、时长、用了哪个后端、哪些后端失败了
   transcript.txt  逐字稿
@@ -10,9 +13,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
+import wave
 from pathlib import Path
 
 import requests
@@ -80,6 +85,73 @@ def douyin_to_text(share_text: str, force: bool = False, settings: Settings | No
     (item_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     cleanup_retained_videos(settings)
     return {**meta, "transcript": text, "cached": False}
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _wav_seconds(wav: Path) -> float | None:
+    try:
+        with wave.open(str(wav)) as f:
+            return round(f.getnframes() / f.getframerate(), 1)
+    except (wave.Error, OSError, ZeroDivisionError):
+        return None
+
+
+def file_to_text(
+    path: str | Path, title: str | None = None, force: bool = False, settings: Settings | None = None
+) -> dict:
+    """本地视频或音频文件 → 逐字稿。原文件只读不动，不复制进素材库。"""
+    settings = settings or get_settings()
+    src = Path(path).expanduser()
+    if not src.is_file():
+        raise TranscribeError(f"找不到文件：{src}")
+    digest = _sha256(src)
+    item_id = f"file-{digest[:16]}"
+    item_dir = settings.data_dir / item_id
+
+    if not force and (cached := load_cached(item_dir)):
+        log.info("命中缓存 %s", item_id)
+        return cached
+
+    item_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+    wav = extract_audio(src, item_dir / "audio.wav")
+    text = transcribe(wav, settings.asr_model, settings.asr_device)
+
+    meta = {
+        "aweme_id": item_id,
+        "title": title or src.stem,
+        "author": None,
+        "duration_s": _wav_seconds(wav),
+        "backend": "local_file",
+        "source_file": src.name,
+        "sha256": digest,
+        "asr_model": settings.asr_model,
+        "timing_s": {"transcribe": round(time.monotonic() - t0, 1)},
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "dir": str(item_dir),
+    }
+    (item_dir / "transcript.txt").write_text(text, encoding="utf-8")
+    (item_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {**meta, "transcript": text, "cached": False}
+
+
+def run_file_safe(
+    path: str, title: str | None = None, force: bool = False, settings: Settings | None = None
+) -> dict:
+    """file_to_text 的不抛异常版本，给 MCP 用。"""
+    try:
+        return file_to_text(path, title=title, force=force, settings=settings)
+    except TranscribeError as e:
+        return {"error": "transcribe_failed", "message": str(e)}
+    except OSError as e:
+        return {"error": "file_unreadable", "message": f"读不了文件：{e}"}
 
 
 def run_safe(share_text: str, force: bool = False, settings: Settings | None = None) -> dict:
