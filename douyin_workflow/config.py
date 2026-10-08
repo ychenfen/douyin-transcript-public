@@ -30,6 +30,11 @@ class Settings:
     )
     # 原始 cookie 字符串（f2 用），从浏览器开发者工具里复制
     cookie_string: str | None = field(default_factory=lambda: os.getenv("DOUYIN_COOKIE") or None)
+    # 微信视频号分享链接通过已登录的元宝 Web 会话解析。Cookie 只从环境注入。
+    wechat_yuanbao_cookie: str = field(default_factory=lambda: os.getenv("WECHAT_YUANBAO_COOKIE", ""))
+    wechat_require_auth: bool = field(
+        default_factory=lambda: os.getenv("WECHAT_REQUIRE_AUTH", "1").strip().lower() not in {"0", "false", "no", "off"}
+    )
     # 两次下载之间的最小间隔（秒），防风控
     min_interval: float = field(default_factory=lambda: float(os.getenv("DOUYIN_MIN_INTERVAL", "8")))
     # 转写模型：paraformer-zh / SenseVoiceSmall（FunASR）或 sherpa-sensevoice（轻量 CPU）

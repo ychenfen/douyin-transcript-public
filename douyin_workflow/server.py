@@ -32,8 +32,9 @@ import requests
 from . import pipeline
 from .config import Settings, get_settings
 from .media import cleanup_retained_videos, create_workbench_bundle, retained_video
-from .share import ShareParseError, resolve
+from .share import ShareParseError
 from .web_page import INDEX_HTML
+from .wechat import is_wechat_share_text
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def done_payload(res: dict, aweme_id: str, cached: bool, video_available: bool =
 
 
 class Jobs:
-    """按作品 ID 去重的后台任务。转写本身是串行的，所以只开一个工作线程。"""
+    """按素材 ID 去重的后台任务。转写本身是串行的，所以只开一个工作线程。"""
 
     def __init__(self, runner: Callable[[str], dict]):
         self.runner = runner
@@ -92,26 +93,49 @@ class App:
         resolver: Callable[[str], tuple[str, str]] | None = None,
         wait_s: float = 25,
         require_auth: bool = True,
+        wechat_require_auth: bool | None = None,
     ):
         self.token = token
         self.require_auth = require_auth
         self.settings = settings or get_settings()
-        self.resolver = resolver or (lambda t: resolve(t, timeout=self.settings.timeout))
+        self.resolver = resolver or (lambda text: pipeline.resolve_source(text, settings=self.settings))
         self.jobs = Jobs(runner or (lambda url: pipeline.run_safe(url, settings=self.settings)))
         self.wait_s = wait_s
+        self.wechat_require_auth = (
+            self.settings.wechat_require_auth if wechat_require_auth is None else wechat_require_auth
+        )
+
+    def token_matches(self, header: str | None) -> bool:
+        expected = f"Bearer {self.token}"
+        return bool(self.token and header) and hmac.compare_digest(header.encode(), expected.encode())
 
     def authorized(self, header: str | None) -> bool:
         if not self.require_auth:
             return True
-        expected = f"Bearer {self.token}"
-        return bool(header) and hmac.compare_digest(header.encode(), expected.encode())
+        return self.token_matches(header)
+
+    def authorized_for_text(self, header: str | None, text: str) -> bool:
+        if self.require_auth:
+            return self.token_matches(header)
+        if self.wechat_require_auth and is_wechat_share_text(text):
+            return self.token_matches(header)
+        return True
+
+    def authorized_for_item(self, header: str | None, item_id: str) -> bool:
+        if self.require_auth or (self.wechat_require_auth and item_id.startswith("wx-")):
+            return self.token_matches(header)
+        return True
 
     def transcribe(self, share_text: str) -> dict:
         cleanup_retained_videos(self.settings)
         try:
-            url, aweme_id = self.resolver(share_text)
+            resolved = self.resolver(share_text)
+            if len(resolved) == 2:  # 兼容已有调用方注入的抖音 resolver
+                url, aweme_id = resolved
+            else:
+                url, aweme_id, _platform = resolved
         except ShareParseError as e:
-            return {"status": "error", "text": f"没认出抖音链接：{e}"}
+            return {"status": "error", "text": f"没认出支持的短视频链接：{e}"}
         except requests.RequestException as e:
             return {"status": "error", "text": f"解析短链时网络出错：{e}"}
 
@@ -144,6 +168,7 @@ def _handler(app: App):
             data = (
                 INDEX_HTML.replace("__CSP_NONCE__", nonce)
                 .replace("__AUTH_REQUIRED__", "true" if app.require_auth else "false")
+                .replace("__WECHAT_AUTH_REQUIRED__", "true" if app.wechat_require_auth else "false")
                 .encode("utf-8")
             )
             self.send_response(200)
@@ -209,15 +234,16 @@ def _handler(app: App):
             if path in ("/", "/index.html"):
                 self.wfile.write(self._html_headers())
                 return
-            media_match = re.fullmatch(r"/media/([0-9]{10,25})/video", path)
+            media_match = re.fullmatch(r"/media/((?:[0-9]{10,25}|wx-[0-9a-f]{16}))/video", path)
             if media_match:
-                if not app.authorized(self.headers.get("Authorization")):
+                item_id = media_match.group(1)
+                if not app.authorized_for_item(self.headers.get("Authorization"), item_id):
                     return self._send(401, {"status": "error", "text": "访问密码不对"})
                 cleanup_retained_videos(app.settings)
-                video = retained_video(app.settings, media_match.group(1))
+                video = retained_video(app.settings, item_id)
                 if video is None:
                     return self._send(404, {"status": "error", "text": "原视频未保留或已经过期"})
-                return self._send_file(video, "video/mp4", f"douyin-{media_match.group(1)}{video.suffix.lower()}")
+                return self._send_file(video, "video/mp4", f"video-{item_id}{video.suffix.lower()}")
             self._send(404, {"status": "error", "text": "not found"})
 
         def do_HEAD(self):
@@ -238,8 +264,6 @@ def _handler(app: App):
         def do_POST(self):
             if self.path not in ("/transcribe", "/bundle"):
                 return self._send(404, {"status": "error", "text": "not found"})
-            if not app.authorized(self.headers.get("Authorization")):
-                return self._send(401, {"status": "error", "text": "口令（token）不对，检查快捷指令里的 Authorization"})
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -255,13 +279,24 @@ def _handler(app: App):
                 if not isinstance(body, dict):
                     return self._send(400, {"status": "error", "text": "请求格式不对"})
                 aweme_id = str(body.get("aweme_id") or "")
+                if not app.authorized_for_item(self.headers.get("Authorization"), aweme_id):
+                    return self._send(401, {"status": "error", "text": "访问密码不对"})
                 transcript = str(body.get("transcript") or "")
                 try:
                     bundle = create_workbench_bundle(app.settings, aweme_id, transcript)
                 except (FileNotFoundError, ValueError) as error:
                     return self._send(404, {"status": "error", "text": str(error)})
-                return self._send_file(bundle, "application/zip", f"douyin-{aweme_id}-workbench.zip", True)
+                return self._send_file(bundle, "application/zip", f"video-{aweme_id}-workbench.zip", True)
             text = body.get("text", "") if isinstance(body, dict) else raw
+            if not app.authorized_for_text(self.headers.get("Authorization"), str(text)):
+                return self._send(
+                    401,
+                    {
+                        "status": "error",
+                        "text": "微信视频号链接需要访问密码",
+                        "wechat_auth_required": True,
+                    },
+                )
             self._send(200, app.transcribe(str(text)))
 
         def log_message(self, fmt, *args):

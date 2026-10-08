@@ -1,4 +1,4 @@
-"""手机浏览器用的单页：抖音分享链接 → 转写 → 校对、复制或下载。
+"""手机浏览器用的单页：短视频分享链接 → 转写 → 校对、复制或下载。
 
 请求使用相对路径，因此挂在 nginx 前缀（如 /dy/）下也能工作。
 服务端可切换免密码或口令保护模式；口令保护模式只使用 sessionStorage。
@@ -12,7 +12,7 @@ INDEX_HTML = r"""<!doctype html>
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f3efe5">
 <link rel="icon" href="data:,">
-<title>抖音素材台</title>
+<title>短视频素材台</title>
 <style nonce="__CSP_NONCE__">
   :root {
     --paper:#f3efe5; --card:#fffdf7; --ink:#17211f; --muted:#65706d;
@@ -102,21 +102,21 @@ INDEX_HTML = r"""<!doctype html>
 <body>
 <main>
   <header>
-    <div><p class="eyebrow">Video Research Desk</p><h1>抖音素材台</h1></div>
+    <div><p class="eyebrow">Video Research Desk</p><h1>短视频素材台</h1></div>
     <span class="edition">个人素材工具 · 网页版</span>
   </header>
 
   <section class="card hidden" id="pwCard">
     <div class="card-head"><h2><span class="step-no">0</span>访问验证</h2></div>
-    <label for="pw">访问密码</label>
+    <label for="pw">访问密码（微信链接需要）</label>
     <input id="pw" type="password" autocomplete="current-password" placeholder="只保存在这台设备的浏览器里">
   </section>
 
   <section class="card">
     <div class="card-head"><h2><span class="step-no">1</span>放入素材</h2><button class="text-btn hidden" id="forget" type="button">更换密码</button></div>
-    <label for="link">抖音分享口令或链接</label>
-    <textarea id="link" placeholder="粘贴整段分享口令即可，系统会自动识别其中的链接"></textarea>
-    <p class="hint">支持 v.douyin.com 短链；首次处理长视频可能需要几分钟。</p>
+    <label for="link">抖音或微信视频号分享链接</label>
+    <textarea id="link" placeholder="粘贴整段分享口令或 weixin.qq.com/sph/... 链接"></textarea>
+    <p class="hint">抖音链接免密码；微信链接需要访问密码和有效登录态。首次处理长视频可能需要几分钟。</p>
     <button class="primary" id="go" type="button">开始提取文字</button>
   </section>
 
@@ -157,6 +157,7 @@ INDEX_HTML = r"""<!doctype html>
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var AUTH_REQUIRED = __AUTH_REQUIRED__;
+  var WECHAT_AUTH_REQUIRED = __WECHAT_AUTH_REQUIRED__;
   var TOKEN_KEY = "dy2text_token";
   var HISTORY_KEY = "dy2text_history_v1";
   var current = null;
@@ -165,12 +166,14 @@ INDEX_HTML = r"""<!doctype html>
   function getStored(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch (e) { return fallback; } }
   function setStored(key, value) { try { localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)); } catch (e) {} }
   function removeStored(key) { try { localStorage.removeItem(key); } catch (e) {} }
-  function savedToken() { try { return AUTH_REQUIRED ? sessionStorage.getItem(TOKEN_KEY) || "" : ""; } catch (e) { return ""; } }
-  function saveToken(value) { if (!AUTH_REQUIRED) return; try { sessionStorage.setItem(TOKEN_KEY, value); } catch (e) {} }
+  function isWechatText(value) { return /https?:\/\/(?:weixin\.qq\.com\/sph\/|channels\.weixin\.qq\.com\/finder-preview\/pages\/sph)/i.test(value || ""); }
+  function needsToken() { return AUTH_REQUIRED || (WECHAT_AUTH_REQUIRED && isWechatText($("link").value)); }
+  function savedToken() { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } }
+  function saveToken(value) { if (!(AUTH_REQUIRED || WECHAT_AUTH_REQUIRED)) return; try { sessionStorage.setItem(TOKEN_KEY, value); } catch (e) {} }
   function removeToken() { try { sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
   function requestHeaders(extra, token) {
     var headers = extra || {};
-    if (AUTH_REQUIRED) headers.Authorization = "Bearer " + (token || savedToken());
+    var value = token || savedToken(); if (value) headers.Authorization = "Bearer " + value;
     return headers;
   }
   function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
@@ -187,12 +190,12 @@ INDEX_HTML = r"""<!doctype html>
   }
   function hideStatus() { $("statusBox").classList.add("hidden"); }
   function updateAuthUI() {
-    if (!AUTH_REQUIRED) { $("pwCard").classList.add("hidden"); $("forget").classList.add("hidden"); return; }
+    if (!needsToken()) { $("pwCard").classList.add("hidden"); $("forget").classList.add("hidden"); return; }
     var hasToken = !!savedToken();
     if (hasToken) { $("pw").value = savedToken(); $("pwCard").classList.add("hidden"); $("forget").classList.remove("hidden"); }
     else { $("pwCard").classList.remove("hidden"); $("forget").classList.add("hidden"); }
   }
-  function cleanFileName(name) { return (name || "抖音逐字稿").replace(/[\\/:*?\"<>|]/g, "-").slice(0, 70); }
+  function cleanFileName(name) { return (name || "短视频逐字稿").replace(/[\\/:*?\"<>|]/g, "-").slice(0, 70); }
   function fullText() {
     var title = current && current.title ? current.title : "（无标题）";
     var meta = [current && current.author, current && current.duration_s ? current.duration_s + " 秒" : ""].filter(Boolean).join(" · ");
@@ -203,7 +206,7 @@ INDEX_HTML = r"""<!doctype html>
       "要求：\n1. 分开列出：视频原话、可验证事实、营销或推测性主张。\n2. 优先查项目官网、官方公告、论文、代码仓库及当事人原始发言；二手报道只作补充。\n3. 对数字、日期、模型名称、开源状态和能力边界逐项核实。\n4. 找不到可靠证据的内容明确写“未核实”，不要补全或猜测。\n5. 最后说明：这条内容对我的工作流有什么可复用的做法、哪些部分不建议照搬，并给出一个最小验证方案。\n6. 附上可点击来源链接，并标明每个来源支持哪项结论。\n\n素材：\n" + fullText();
   }
   function workbenchPrompt() {
-    return "请把下面的抖音逐字稿作为待核查的研究素材，接入 touyan-video-workbench。不要照抄原文，也不要把原视频默认视为已获发布授权。\n\n" +
+    return "请把下面的短视频逐字稿作为待核查的研究素材，接入 touyan-video-workbench。不要照抄原文，也不要把原视频默认视为已获发布授权。\n\n" +
       "任务：\n1. 先核查观点、数字和时效，列出可靠来源；无法核实的删掉或标注。\n2. 判断更适合 ConceptVideo（30 秒观点短视频）还是 DialogueVideo（师徒对话科普）。\n3. 按对应 SOP 生成 episodes/<id>/episode.json，只改该文件，不绕过 lint。\n4. 保留边界条件、风险和反例，结尾必须有‘个人观点，不构成投资建议’。\n5. 素材包中的视频仅可作内部研究；发布前单独核验版权、肖像和平台规则。\n6. 完成后依次跑 lint、build、check，并人工查看联系表。\n\n素材：\n" + fullText();
   }
   function triggerBlob(blob, filename) {
@@ -272,13 +275,13 @@ INDEX_HTML = r"""<!doctype html>
   }
   async function run() {
     var token = $("pw").value.trim(); var text = $("link").value.trim();
-    if (AUTH_REQUIRED && !token) { updateAuthUI(); setStatus("请先填写访问密码。", true, 0); $("pw").focus(); return; }
-    if (!text) { setStatus("请先粘贴抖音分享口令或链接。", true, 0); $("link").focus(); return; }
+    if (needsToken() && !token) { updateAuthUI(); setStatus("微信视频号链接需要访问密码。", true, 0); $("pw").focus(); return; }
+    if (!text) { setStatus("请先粘贴抖音或微信视频号分享链接。", true, 0); $("link").focus(); return; }
     $("go").disabled = true; $("result").classList.add("hidden"); setStatus("正在识别分享链接…", false, 0);
     var deadline = Date.now() + 15 * 60 * 1000;
     try {
       while (Date.now() < deadline) {
-        if (AUTH_REQUIRED) saveToken(token);
+        if (needsToken()) saveToken(token);
         var response = await fetch("transcribe", {
           method:"POST", headers:requestHeaders({ "Content-Type":"application/json" }, token), body:JSON.stringify({ text:text })
         });
@@ -300,6 +303,7 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   $("go").addEventListener("click", run);
+  $("link").addEventListener("input", updateAuthUI);
   $("forget").addEventListener("click", function () { removeToken(); $("pw").value = ""; updateAuthUI(); $("pw").focus(); });
   $("copyTranscript").addEventListener("click", function () { copyText($("transcript").value.trim(), "逐字稿已复制"); });
   $("copyFull").addEventListener("click", function () { copyText(fullText(), "完整信息已复制"); });
@@ -315,7 +319,6 @@ INDEX_HTML = r"""<!doctype html>
   $("again").addEventListener("click", function () { current = null; $("link").value = ""; $("result").classList.add("hidden"); hideStatus(); window.scrollTo({ top:0, behavior:"smooth" }); $("link").focus(); });
   $("clearHistory").addEventListener("click", function () { removeStored(HISTORY_KEY); renderHistory(); showToast("历史已清空"); });
 
-  if (!AUTH_REQUIRED) removeToken();
   updateAuthUI(); renderHistory();
 })();
 </script>

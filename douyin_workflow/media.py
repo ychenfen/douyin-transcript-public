@@ -14,11 +14,11 @@ from pathlib import Path
 from .config import Settings
 
 
-AWEME_RE = re.compile(r"^[0-9]{10,25}$")
+ITEM_ID_RE = re.compile(r"^(?:[0-9]{10,25}|wx-[0-9a-f]{16})$")
 
 
 def retained_video(settings: Settings, aweme_id: str) -> Path | None:
-    if not AWEME_RE.fullmatch(aweme_id):
+    if not ITEM_ID_RE.fullmatch(aweme_id):
         return None
     item_dir = settings.data_dir / aweme_id
     candidates = sorted(item_dir.glob("video.*"))
@@ -84,7 +84,7 @@ def create_workbench_bundle(settings: Settings, aweme_id: str, transcript: str |
         "author": meta.get("author") or "",
         "duration_s": meta.get("duration_s"),
         "source_url": meta.get("share_url") or "",
-        "source_platform": "douyin",
+        "source_platform": meta.get("source_platform") or "douyin",
         "video_file": "video" + video.suffix.lower(),
         "transcript_file": "transcript.txt",
         "sha256": {"video": _sha256(video), "transcript": hashlib.sha256(transcript_bytes).hexdigest()},

@@ -43,6 +43,16 @@ def video_file_to_text(path: str, title: str | None = None, force: bool = False)
 
 
 @mcp.tool()
+def wechat_link_to_text(share_text: str, force: bool = False) -> dict:
+    """把微信视频号分享链接直接下载并转成逐字稿。
+
+    服务端必须通过 WECHAT_YUANBAO_COOKIE 配置已登录的元宝 Web 会话。
+    Cookie 不会写入素材库或工具返回值。
+    """
+    return pipeline.run_safe(share_text, force=force)
+
+
+@mcp.tool()
 def douyin_list_local(limit: int = 20) -> list[dict]:
     """列出本地素材库里最近处理过的作品（标题、作者、时长、目录），不含逐字稿正文。"""
     return pipeline.list_local(limit)

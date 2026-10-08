@@ -17,3 +17,9 @@ def test_download_failure_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(mcp_server.pipeline, "douyin_to_text", boom)
     res = mcp_server.douyin_to_text("https://www.douyin.com/video/7372484719365098803")
     assert res["error"] == "download_failed" and res["backends"]["ytdlp"] == "cookie 过期"
+
+
+def test_wechat_tool_uses_safe_link_dispatch(monkeypatch):
+    monkeypatch.setattr(mcp_server.pipeline, "run_safe", lambda text, force=False: {"text": text, "force": force})
+    result = mcp_server.wechat_link_to_text("https://weixin.qq.com/sph/A6uI5lLvuQ", force=True)
+    assert result["force"] is True and "weixin.qq.com" in result["text"]

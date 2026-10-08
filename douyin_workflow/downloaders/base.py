@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -43,6 +45,22 @@ class Backend(Protocol):
 MIN_VIDEO_BYTES = 50 * 1024
 
 
+def _safe_url_label(value: str) -> str:
+    """Keep troubleshooting context without leaking signed query parameters."""
+    try:
+        parsed = urlsplit(value)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:120]
+    except ValueError:
+        return "<invalid-url>"
+
+
+_URL_IN_ERROR_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def _safe_error_message(error: Exception) -> str:
+    return _URL_IN_ERROR_RE.sub(lambda match: _safe_url_label(match.group(0)), str(error))
+
+
 def stream_to_file(
     urls: list[str],
     dest: Path,
@@ -71,6 +89,6 @@ def stream_to_file(
             tmp.replace(dest)
             return u
         except (requests.RequestException, DownloadError, OSError) as e:
-            errors.append(f"{u[:80]}: {e}")
+            errors.append(f"{_safe_url_label(u)}: {_safe_error_message(e)}")
             tmp.unlink(missing_ok=True)
     raise DownloadError("所有播放地址都失败：" + " | ".join(errors))

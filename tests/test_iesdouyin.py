@@ -115,6 +115,15 @@ def test_backend_rejects_tiny_file(tmp_path):
         IesDouyinBackend(session=sess).download("u", ITEM["aweme_id"], tmp_path)
 
 
+def test_stream_error_redacts_signed_query(tmp_path):
+    signed = "https://finder.video.qq.com/video.mp4?token=secret&sign=also-secret"
+    with pytest.raises(DownloadError) as error:
+        base.stream_to_file([signed], tmp_path / "video.mp4", FakeSession([]), 1)
+    message = str(error.value)
+    assert "finder.video.qq.com/video.mp4" in message
+    assert "secret" not in message and "token=" not in message and "sign=" not in message
+
+
 def test_backend_image_note_is_unsupported(tmp_path):
     note = {**ITEM, "images": [{"url_list": ["x"]}], "video": {"play_addr": {"url_list": []}}}
     html = page({"note_(id)/page": {"videoInfoRes": {"item_list": [note]}}})

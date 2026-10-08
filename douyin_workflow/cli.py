@@ -1,7 +1,7 @@
 """命令行入口。
 
-    python -m douyin_workflow run "<分享口令>"      # 下载 + 转写，打印逐字稿
-    python -m douyin_workflow file video.mp4         # 本地视频转写（视频号等先下载到本机）
+    python -m douyin_workflow run "<分享口令>"      # 抖音/视频号链接下载 + 转写
+    python -m douyin_workflow file video.mp4         # 本地视频或音频文件转写
     python -m douyin_workflow list                   # 本地素材库
     python -m douyin_workflow healthcheck            # 逐个后端测固定链接，失败推送告警
 
@@ -27,11 +27,12 @@ from .config import get_settings
 from .downloaders import AllBackendsFailed, DownloadChain, UnsupportedContent, build_backends
 from .share import ShareParseError, resolve
 from .transcribe import TranscribeError
+from .wechat import WechatResolveError
 
 def cmd_run(args) -> int:
-    from .pipeline import douyin_to_text
+    from .pipeline import link_to_text
 
-    res = douyin_to_text(args.share_text, force=args.force)
+    res = link_to_text(args.share_text, force=args.force)
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     else:
@@ -119,16 +120,17 @@ def cmd_healthcheck(args) -> int:
 def cmd_serve(args) -> int:
     from .server import App, make_server
 
+    settings = get_settings()
     require_auth = os.getenv("DOUYIN_REQUIRE_AUTH", "1").strip().lower() not in {"0", "false", "no", "off"}
     token = os.getenv("DOUYIN_SERVER_TOKEN", "")
-    if require_auth and not token:
+    if (require_auth or settings.wechat_require_auth) and not token:
         import secrets
 
-        print("请先设置 DOUYIN_SERVER_TOKEN，例如：", file=sys.stderr)
+        print("全站或微信链接鉴权已启用，请先设置 DOUYIN_SERVER_TOKEN，例如：", file=sys.stderr)
         print(f"  export DOUYIN_SERVER_TOKEN={secrets.token_hex(16)}", file=sys.stderr)
         return 2
-    srv = make_server(App(token, wait_s=args.wait, require_auth=require_auth), args.host, args.port)
-    mode = "需要访问密码" if require_auth else "免密码（请在公网入口启用限流）"
+    srv = make_server(App(token, settings=settings, wait_s=args.wait, require_auth=require_auth), args.host, args.port)
+    mode = "全站需要访问密码" if require_auth else "抖音免密码；微信链接单独鉴权"
     print(f"已启动：http://{args.host}:{args.port}/transcribe · {mode}", file=sys.stderr)
     try:
         srv.serve_forever()
@@ -142,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="douyin_workflow")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="下载并转写一条分享口令")
+    r = sub.add_parser("run", help="下载并转写一条抖音或微信视频号分享链接")
     r.add_argument("share_text")
     r.add_argument("--force", action="store_true", help="忽略缓存重新处理")
     r.add_argument("--json", action="store_true", help="输出完整 JSON")
@@ -176,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, err in e.errors.items():
             print(f"  [{name}] {err[:300]}", file=sys.stderr)
         return 3
-    except (ShareParseError, UnsupportedContent, TranscribeError, requests.RequestException) as e:
+    except (ShareParseError, UnsupportedContent, TranscribeError, WechatResolveError, requests.RequestException) as e:
         print(f"失败：{e}", file=sys.stderr)
         return 3
 

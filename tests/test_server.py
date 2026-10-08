@@ -77,6 +77,16 @@ def test_public_mode_accepts_request_without_token(serve):
     assert result["transcript"] == "大家好。"
 
 
+def test_public_mode_requires_token_for_wechat_link(serve):
+    base, _ = serve(ok_runner, require_auth=False)
+    wechat = "https://weixin.qq.com/sph/A6uI5lLvuQ"
+    with pytest.raises(urllib.error.HTTPError) as error:
+        post(base, wechat, token=None)
+    assert error.value.code == 401
+    # 正确口令已通过微信专用鉴权；测试 resolver 随后按预期拒绝非抖音测试链接。
+    assert post(base, wechat, token=TOKEN)["status"] == "error"
+
+
 def test_done_returns_readable_text(serve):
     base, _ = serve(ok_runner)
     res = post(base, SHARE)
@@ -237,8 +247,9 @@ def test_index_page_served(require_auth):
             assert response.headers["X-Frame-Options"] == "DENY"
             assert "__CSP_NONCE__" not in body
             assert "__AUTH_REQUIRED__" not in body
-        assert "抖音素材台" in body and 'fetch("transcribe"' in body
+        assert "短视频素材台" in body and 'fetch("transcribe"' in body
         assert f"var AUTH_REQUIRED = {str(require_auth).lower()};" in body
+        assert "__WECHAT_AUTH_REQUIRED__" not in body
         assert '<section class="card hidden" id="pwCard">' in body
         assert all(
             label in body
