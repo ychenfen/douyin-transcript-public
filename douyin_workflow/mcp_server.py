@@ -53,6 +53,16 @@ def wechat_link_to_text(share_text: str, force: bool = False) -> dict:
 
 
 @mcp.tool()
+def bilibili_to_text(share_text: str, force: bool = False) -> dict:
+    """B站 BV 或 b23.tv 分享链接转文字，支持 ?p= 分集和片段时间戳。
+
+    返回原始转写、segments、Markdown/SRT 导出；不提取画面硬字幕。
+    使用 sherpa-sensevoice 时长音频分段处理，中断重试可续跑。
+    """
+    return pipeline.run_safe(share_text, force=force)
+
+
+@mcp.tool()
 def douyin_list_local(limit: int = 20) -> list[dict]:
     """列出本地素材库里最近处理过的作品（标题、作者、时长、目录），不含逐字稿正文。"""
     return pipeline.list_local(limit)

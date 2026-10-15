@@ -114,9 +114,9 @@ INDEX_HTML = r"""<!doctype html>
 
   <section class="card">
     <div class="card-head"><h2><span class="step-no">1</span>放入素材</h2><button class="text-btn hidden" id="forget" type="button">更换密码</button></div>
-    <label for="link">抖音或微信视频号分享链接</label>
-    <textarea id="link" placeholder="粘贴整段分享口令或 weixin.qq.com/sph/... 链接"></textarea>
-    <p class="hint">抖音链接免密码；微信链接需要访问密码和有效登录态。首次处理长视频可能需要几分钟。</p>
+    <label for="link">抖音、B站或微信视频号分享链接</label>
+    <textarea id="link" placeholder="粘贴分享链接；B站分集请保留 ?p=16 等分P参数"></textarea>
+    <p class="hint">抖音和B站链接免密码；微信链接需要访问密码。B站按所选分P提取音频，长视频可稍后用同一链接查看进度。</p>
     <button class="primary" id="go" type="button">开始提取文字</button>
   </section>
 
@@ -134,10 +134,13 @@ INDEX_HTML = r"""<!doctype html>
     </div>
     <label class="edit-label" for="transcript"><span>逐字稿</span><small>可直接修正人名、产品名和错别字</small></label>
     <textarea id="transcript" spellcheck="false"></textarea>
+    <p class="hint hidden" id="timestampNote">时间戳为识别片段边界，数字和公式需核对；SRT、Markdown 导出原始分段稿，不包含上方手动修改。</p>
     <div class="actions">
       <button class="action strong" id="copyTranscript" type="button">复制纯逐字稿</button>
       <button class="action" id="copyFull" type="button">复制完整信息</button>
       <button class="action" id="download" type="button">下载 TXT</button>
+      <button class="action hidden" id="downloadSrt" type="button">下载分段 SRT</button>
+      <button class="action hidden" id="downloadMarkdown" type="button">下载时间戳 Markdown</button>
       <button class="action hidden" id="downloadVideo" type="button">下载原视频</button>
       <button class="action hidden" id="downloadBundle" type="button">下载工作台素材包</button>
       <button class="action" id="copyResearch" type="button">复制深挖提示词</button>
@@ -270,15 +273,18 @@ INDEX_HTML = r"""<!doctype html>
     $("cacheTag").classList.toggle("hidden", !data.cached);
     $("downloadVideo").classList.toggle("hidden", !data.video_available);
     $("downloadBundle").classList.toggle("hidden", !data.video_available);
+    $("downloadSrt").classList.toggle("hidden", !(data.exports && data.exports.srt));
+    $("downloadMarkdown").classList.toggle("hidden", !(data.exports && data.exports.markdown));
+    $("timestampNote").classList.toggle("hidden", !(data.exports && data.exports.markdown));
     $("result").classList.remove("hidden");
     saveHistory(data);
   }
   async function run() {
     var token = $("pw").value.trim(); var text = $("link").value.trim();
     if (needsToken() && !token) { updateAuthUI(); setStatus("微信视频号链接需要访问密码。", true, 0); $("pw").focus(); return; }
-    if (!text) { setStatus("请先粘贴抖音或微信视频号分享链接。", true, 0); $("link").focus(); return; }
+    if (!text) { setStatus("请先粘贴抖音、B站或微信视频号分享链接。", true, 0); $("link").focus(); return; }
     $("go").disabled = true; $("result").classList.add("hidden"); setStatus("正在识别分享链接…", false, 0);
-    var deadline = Date.now() + 15 * 60 * 1000;
+    var deadline = Date.now() + 60 * 60 * 1000;
     try {
       while (Date.now() < deadline) {
         if (needsToken()) saveToken(token);
@@ -311,6 +317,12 @@ INDEX_HTML = r"""<!doctype html>
   $("copyWorkbench").addEventListener("click", function () { copyText(workbenchPrompt(), "一键成片提示词已复制"); });
   $("downloadVideo").addEventListener("click", function () { downloadRemote("video"); });
   $("downloadBundle").addEventListener("click", function () { downloadRemote("bundle"); });
+  $("downloadSrt").addEventListener("click", function () {
+    if (current && current.exports && current.exports.srt) triggerBlob(new Blob([current.exports.srt], { type:"text/plain;charset=utf-8" }), cleanFileName(current.title) + ".srt");
+  });
+  $("downloadMarkdown").addEventListener("click", function () {
+    if (current && current.exports && current.exports.markdown) triggerBlob(new Blob([current.exports.markdown], { type:"text/markdown;charset=utf-8" }), cleanFileName(current.title) + ".md");
+  });
   $("download").addEventListener("click", function () {
     var blob = new Blob([fullText() + "\n"], { type:"text/plain;charset=utf-8" }); var url = URL.createObjectURL(blob);
     var link = document.createElement("a"); link.href = url; link.download = cleanFileName(current && current.title) + ".txt";

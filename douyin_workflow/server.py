@@ -30,6 +30,7 @@ from typing import Callable
 import requests
 
 from . import pipeline
+from .bilibili import BilibiliError
 from .config import Settings, get_settings
 from .media import cleanup_retained_videos, create_workbench_bundle, retained_video
 from .share import ShareParseError
@@ -61,6 +62,12 @@ def done_payload(res: dict, aweme_id: str, cached: bool, video_available: bool =
         "backend": res.get("backend") or "",
         "timing_s": res.get("timing_s") or {},
         "video_available": video_available,
+        "source_platform": res.get("source_platform") or "douyin",
+        "share_url": res.get("share_url") or "",
+        "page": res.get("page"),
+        "segments": res.get("segments") or [],
+        "exports": res.get("exports") or {},
+        "transcription_note": res.get("transcription_note") or "",
     }
 
 
@@ -134,13 +141,14 @@ class App:
                 url, aweme_id = resolved
             else:
                 url, aweme_id, _platform = resolved
-        except ShareParseError as e:
-            return {"status": "error", "text": f"没认出支持的短视频链接：{e}"}
+        except (ShareParseError, BilibiliError) as e:
+            return {"status": "error", "text": f"没认出支持的视频链接：{e}"}
         except requests.RequestException as e:
             return {"status": "error", "text": f"解析短链时网络出错：{e}"}
 
         cached = pipeline.load_cached(self.settings.data_dir / aweme_id)
         if cached:
+            self.jobs.finish(aweme_id)
             return done_payload(cached, aweme_id, True, retained_video(self.settings, aweme_id) is not None)
 
         future, started = self.jobs.get_or_start(aweme_id, url)
@@ -148,7 +156,15 @@ class App:
             res = future.result(timeout=self.wait_s)
         except FutureTimeout:
             waited = int(time.monotonic() - started)
-            return {"status": "running", "text": f"正在下载和转写，已处理 {waited} 秒…", "aweme_id": aweme_id}
+            message = f"正在下载和转写，已等待 {waited} 秒…"
+            progress = {}
+            if aweme_id.startswith("bili-") and future.running():
+                try:
+                    progress = json.loads((self.settings.data_dir / aweme_id / "progress.json").read_text())
+                    message = f"已转写 {int(progress['processed_s'])} / {int(progress['duration_s'])} 秒音频…"
+                except (OSError, ValueError, KeyError, TypeError):
+                    progress = {}
+            return {"status": "running", "text": message, "aweme_id": aweme_id, "progress": progress}
         except Exception as e:  # runner 里的意外异常
             self.jobs.finish(aweme_id)
             log.exception("任务异常 %s", aweme_id)

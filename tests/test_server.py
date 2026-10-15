@@ -109,6 +109,12 @@ def test_done_also_returns_structured_fields(serve):
         "backend": "iesdouyin",
         "timing_s": {"download": 1.2, "transcribe": 3.4},
         "video_available": False,
+        "source_platform": "douyin",
+        "share_url": "",
+        "page": None,
+        "segments": [],
+        "exports": {},
+        "transcription_note": "",
     }
 
 

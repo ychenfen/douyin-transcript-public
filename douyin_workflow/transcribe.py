@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import gc
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -27,6 +31,38 @@ _MODEL_KWARGS = {
 
 _models: dict[tuple[str, str], object] = {}
 _lock = threading.Lock()
+
+
+def release_models() -> bool:
+    """Drop idle model caches; serialized with inference so active work is safe."""
+    with _lock:
+        if not _models:
+            return False
+        _models.clear()
+        gc.collect()
+        if sys.platform.startswith("linux"):
+            # glibc can retain freed ONNX arenas unless explicitly trimmed.
+            import ctypes
+
+            try:
+                trim = ctypes.CDLL(None).malloc_trim
+                trim.argtypes = [ctypes.c_size_t]
+                trim.restype = ctypes.c_int
+                trim(0)
+            except (OSError, AttributeError):
+                pass
+    return True
+
+
+def _release_after_job(function):
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if os.getenv("DOUYIN_RELEASE_ASR_AFTER_JOB", "0").lower() in {"1", "true", "yes", "on"}:
+                release_models()
+    return wrapped
 
 
 class TranscribeError(RuntimeError):
@@ -50,8 +86,15 @@ def extract_audio(video: Path, wav: Path) -> Path:
     """转成 16kHz 单声道 wav，FunASR 的标准输入。"""
     ffmpeg = os.getenv("DOUYIN_FFMPEG") or shutil.which("ffmpeg")
     if not ffmpeg:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            pass
+    if not ffmpeg:
         raise TranscribeError("找不到 ffmpeg，请先安装并加入 PATH")
-    cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(wav)]
+    cmd = [ffmpeg, "-nostdin", "-y", "-loglevel", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0 or not wav.exists():
         raise TranscribeError(f"ffmpeg 抽音频失败：{proc.stderr.strip()[-300:]}")
@@ -125,24 +168,87 @@ def split_points(samples, sr: int = 16000, chunk_s: float = CHUNK_S, search_s: f
     return cuts
 
 
-def _transcribe_sherpa(wav: Path) -> str:
+def _pcm_chunks(wav: Path, start_frame: int = 0):
+    """Read at most 30.02 seconds; never allocate a whole long recording."""
     import numpy as np
 
     with wave.open(str(wav)) as f:
         sr = f.getframerate()
-        samples = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        if f.getnchannels() != 1 or f.getsampwidth() != 2 or sr != 16000:
+            raise TranscribeError("转写需要 16 kHz 单声道 PCM16 WAV，请先抽取音频")
+        total = f.getnframes()
+        window = int(sr * (CHUNK_S + SEARCH_S + 0.02))
+        offset = start_frame
+        while offset < total:
+            f.setpos(offset)
+            samples = np.frombuffer(f.readframes(min(window, total-offset)), dtype="<i2").astype(np.float32) / 32768.0
+            cut = split_points(samples, sr)[1]
+            yield offset / sr, (offset + cut) / sr, samples[:cut]
+            offset += cut
+
+
+def _transcribe_sherpa(wav: Path) -> str:
+    return "".join(s["text"] for s in transcribe_segments(wav, SHERPA_MODEL)).strip()
+
+
+def _atomic_json(path: Path, data) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+@_release_after_job
+def transcribe_segments(wav: Path, model_name: str = SHERPA_MODEL, device: str = "auto",
+                        checkpoint_dir: Path | None = None, force: bool = False) -> list[dict]:
+    """Timestamped chunks; sherpa resumes only against the same audio and model."""
+    with wave.open(str(wav)) as f:
+        sr, frames = f.getframerate(), f.getnframes()
+    if model_name != SHERPA_MODEL:
+        return [{"start": 0.0, "end": frames/sr, "text": transcribe(wav, model_name, device)}]
+    rows = []
+    checkpoint = None
+    if checkpoint_dir:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        with wav.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        identity = {"schema": 1, "audio_sha256": digest.hexdigest(), "model": model_name, "device": device,
+                    "sample_rate": sr, "frames": frames, "chunk_s": CHUNK_S, "search_s": SEARCH_S}
+        identity_path = checkpoint_dir / "checkpoint.json"
+        checkpoint = checkpoint_dir / "segments.jsonl"
+        try:
+            if not force and json.loads(identity_path.read_text()) == identity:
+                end = 0.0
+                for line in checkpoint.read_text().splitlines():
+                    try:
+                        row = json.loads(line)
+                        assert isinstance(row["text"], str) and row["start"] == end
+                        assert end < row["end"] <= frames/sr and row["end"] - end <= CHUNK_S + SEARCH_S + 1e-6
+                    except (ValueError, KeyError, TypeError, AssertionError):
+                        break  # An interrupted final write is discarded; keep the valid prefix.
+                    rows.append(row)
+                    end = row["end"]
+        except (OSError, ValueError):
+            pass
+        checkpoint.write_text("".join(json.dumps(r, ensure_ascii=False)+"\n" for r in rows), encoding="utf-8")
+        _atomic_json(identity_path, identity)
     rec = _sherpa_recognizer()
-    cuts = split_points(samples, sr)
-    parts = []
     with _lock:
-        for a, b in zip(cuts, cuts[1:]):
+        for start, end, samples in _pcm_chunks(wav, round(rows[-1]["end"]*sr) if rows else 0):
             st = rec.create_stream()
-            st.accept_waveform(sr, samples[a:b])
+            st.accept_waveform(sr, samples)
             rec.decode_stream(st)
-            parts.append(st.result.text.strip())
-    return "".join(parts).strip()
+            row = {"start": start, "end": end, "text": st.result.text.strip()}
+            rows.append(row)
+            if checkpoint:
+                with checkpoint.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, ensure_ascii=False)+"\n")
+                _atomic_json(checkpoint_dir / "progress.json", {"processed_s": end, "duration_s": frames/sr, "segments": len(rows)})
+    return rows
 
 
+@_release_after_job
 def transcribe(wav: Path, model_name: str = "paraformer-zh", device: str = "auto") -> str:
     if model_name == SHERPA_MODEL:
         return _transcribe_sherpa(wav)

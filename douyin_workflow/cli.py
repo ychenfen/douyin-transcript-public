@@ -28,6 +28,7 @@ from .downloaders import AllBackendsFailed, DownloadChain, UnsupportedContent, b
 from .share import ShareParseError, resolve
 from .transcribe import TranscribeError
 from .wechat import WechatResolveError
+from .bilibili import BilibiliError
 
 def cmd_run(args) -> int:
     from .pipeline import link_to_text
@@ -130,7 +131,7 @@ def cmd_serve(args) -> int:
         print(f"  export DOUYIN_SERVER_TOKEN={secrets.token_hex(16)}", file=sys.stderr)
         return 2
     srv = make_server(App(token, settings=settings, wait_s=args.wait, require_auth=require_auth), args.host, args.port)
-    mode = "全站需要访问密码" if require_auth else "抖音免密码；微信链接单独鉴权"
+    mode = "全站需要访问密码" if require_auth else "抖音/B站免密码；微信链接单独鉴权"
     print(f"已启动：http://{args.host}:{args.port}/transcribe · {mode}", file=sys.stderr)
     try:
         srv.serve_forever()
@@ -144,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="douyin_workflow")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="下载并转写一条抖音或微信视频号分享链接")
+    r = sub.add_parser("run", help="下载并转写抖音、B站（支持分P）或微信视频号分享链接")
     r.add_argument("share_text")
     r.add_argument("--force", action="store_true", help="忽略缓存重新处理")
     r.add_argument("--json", action="store_true", help="输出完整 JSON")
@@ -178,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, err in e.errors.items():
             print(f"  [{name}] {err[:300]}", file=sys.stderr)
         return 3
-    except (ShareParseError, UnsupportedContent, TranscribeError, WechatResolveError, requests.RequestException) as e:
+    except (ShareParseError, UnsupportedContent, TranscribeError, WechatResolveError, BilibiliError, requests.RequestException) as e:
         print(f"失败：{e}", file=sys.stderr)
         return 3
 

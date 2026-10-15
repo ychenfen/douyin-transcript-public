@@ -23,10 +23,12 @@ from pathlib import Path
 import requests
 
 from .config import Settings, get_settings
+from .bilibili import BilibiliError, BilibiliSource, is_bilibili_share_text, resolve_bilibili
 from .downloaders import AllBackendsFailed, DownloadChain, UnsupportedContent, build_backends
 from .media import cleanup_retained_videos
 from .share import ShareParseError, resolve
-from .transcribe import TranscribeError, extract_audio, transcribe
+from .transcribe import TranscribeError, extract_audio, transcribe, transcribe_segments, _atomic_json
+from .transcripts import exports, write_exports
 from .wechat import WechatResolveError, YuanbaoWechatResolver, extract_wechat_url, is_wechat_share_text, wechat_item_id
 
 log = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ def load_cached(item_dir: Path) -> dict | None:
     data = json.loads(meta.read_text(encoding="utf-8"))
     data["transcript"] = txt.read_text(encoding="utf-8")
     data["cached"] = True
+    segments_path = item_dir / "segments.json"
+    if data.get("source_platform") == "bilibili" and segments_path.exists():
+        data["segments"] = json.loads(segments_path.read_text(encoding="utf-8"))
+        data["exports"] = exports(data, data["segments"])
     return data
 
 
@@ -91,6 +97,9 @@ def douyin_to_text(share_text: str, force: bool = False, settings: Settings | No
 def resolve_source(share_text: str, settings: Settings | None = None) -> tuple[str, str, str]:
     """Return canonical URL, stable item ID, and source platform."""
     settings = settings or get_settings()
+    if is_bilibili_share_text(share_text):
+        url, item_id = resolve_bilibili(share_text, timeout=settings.timeout)
+        return url, item_id, "bilibili"
     if is_wechat_share_text(share_text):
         url = extract_wechat_url(share_text)
         return url, wechat_item_id(url), "wechat"
@@ -131,7 +140,60 @@ def wechat_to_text(share_text: str, force: bool = False, settings: Settings | No
     return {**meta, "transcript": text, "cached": False}
 
 
+def bilibili_to_text(share_text: str, force: bool = False, settings: Settings | None = None) -> dict:
+    settings = settings or get_settings()
+    url, item_id = resolve_bilibili(share_text, timeout=settings.timeout)
+    directory = settings.data_dir / item_id
+    if not force and (cached := load_cached(directory)):
+        return cached
+    directory.mkdir(parents=True, exist_ok=True)
+    # Do not serve old completed metadata with new, partly written exports.
+    (directory / "meta.json").unlink(missing_ok=True)
+    (directory / "progress.json").unlink(missing_ok=True)
+    started = time.monotonic()
+    source = BilibiliSource(settings.timeout)
+    try:
+        meta = source.metadata(url)
+        marker_path = directory / "audio-source.json"
+        wav = directory / "audio.wav"
+        try:
+            marker = json.loads(marker_path.read_text())
+        except (OSError, ValueError):
+            marker = {}
+        reusable = (not force and wav.exists() and marker.get("cid") == meta["cid"]
+                    and marker.get("wav_sha256") == _sha256(wav))
+        if not reusable:
+            audio = source.download_audio(meta, directory / "source.m4a")
+            temporary_wav = extract_audio(audio, directory / "audio.tmp.wav")
+            duration = _wav_seconds(temporary_wav)
+            if duration is None or abs(duration - meta["duration_s"]) > 3:
+                raise BilibiliError("音频实际时长与所选分 P 不一致，未将不完整结果写入缓存")
+            temporary_wav.replace(wav)
+            _atomic_json(marker_path, {"cid": meta["cid"], "wav_sha256": _sha256(wav)})
+            audio.unlink(missing_ok=True)
+    finally:
+        source.session.close()
+    download_s = time.monotonic() - started
+    segments = transcribe_segments(wav, settings.asr_model, settings.asr_device,
+                                   checkpoint_dir=directory, force=force)
+    actual_duration = _wav_seconds(wav)
+    if not segments or abs(segments[-1]["end"] - actual_duration) > 0.2:
+        raise TranscribeError("音频未完整转写，已保存分段进度，可重试续跑")
+    meta.update({"aweme_id": item_id, "video_path": None, "source_url": url,
+                 "asr_model": settings.asr_model, "audio_duration_s": actual_duration,
+                 "timing_s": {"download": round(download_s, 1), "transcribe": round(time.monotonic()-started-download_s, 1)},
+                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "dir": str(directory),
+                 "transcription_note": "语音识别初稿，未逐字校对，未提取画面文字"})
+    text = "\n".join(s["text"] for s in segments).strip()
+    content = write_exports(directory, meta, segments)
+    (directory / "transcript.txt").write_text(text, encoding="utf-8")
+    _atomic_json(directory / "meta.json", meta)  # Publish completed cache last.
+    return {**meta, "transcript": text, "segments": segments, "exports": content, "cached": False}
+
+
 def link_to_text(share_text: str, force: bool = False, settings: Settings | None = None) -> dict:
+    if is_bilibili_share_text(share_text):
+        return bilibili_to_text(share_text, force=force, settings=settings)
     if is_wechat_share_text(share_text):
         return wechat_to_text(share_text, force=force, settings=settings)
     return douyin_to_text(share_text, force=force, settings=settings)
@@ -232,6 +294,8 @@ def run_safe(share_text: str, force: bool = False, settings: Settings | None = N
         return {"error": "transcribe_failed", "message": str(e)}
     except WechatResolveError as e:
         return {"error": "wechat_unavailable", "message": str(e)}
+    except BilibiliError as e:
+        return {"error": "bilibili_unavailable", "message": str(e)}
     except requests.RequestException as e:
         return {"error": "network", "message": f"网络出错：{e}"}
 
