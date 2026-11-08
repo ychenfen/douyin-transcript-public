@@ -1,0 +1,29 @@
+services:
+  douyin-transcript:
+    build: .
+    container_name: douyin-transcript-public
+    restart: unless-stopped
+    ports:
+      - "${DOUYIN_SERVER_PORT:-8766}:8766"
+    environment:
+      DOUYIN_REQUIRE_AUTH: "${DOUYIN_REQUIRE_AUTH:-0}"
+      DOUYIN_SERVER_TOKEN: "${DOUYIN_SERVER_TOKEN:-change-me-in-production}"
+      DOUYIN_SERVER_HOST: "0.0.0.0"
+      DOUYIN_SERVER_PORT: "8766"
+      DOUYIN_DATA_DIR: "/data/items"
+      DOUYIN_BACKENDS: "${DOUYIN_BACKENDS:-browser,iesdouyin,f2,ytdlp}"
+      DOUYIN_CHROMIUM_EXECUTABLE: "/usr/bin/chromium"
+      DOUYIN_COOKIES_FILE: "/data/secrets/douyin-anon-cookies.txt"
+      DOUYIN_ASR_MODEL: "${DOUYIN_ASR_MODEL:-sherpa-sensevoice}"
+      DOUYIN_SHERPA_MODEL_DIR: "/data/models/sensevoice"
+      DOUYIN_ASR_THREADS: "${DOUYIN_ASR_THREADS:-2}"
+      DOUYIN_KEEP_VIDEO: "${DOUYIN_KEEP_VIDEO:-1}"
+      DOUYIN_VIDEO_TTL_HOURS: "${DOUYIN_VIDEO_TTL_HOURS:-24}"
+      DOUYIN_VIDEO_MAX_GB: "${DOUYIN_VIDEO_MAX_GB:-2}"
+      DOUYIN_MIN_INTERVAL: "${DOUYIN_MIN_INTERVAL:-3}"
+      WECHAT_REQUIRE_AUTH: "${WECHAT_REQUIRE_AUTH:-1}"
+      WECHAT_YUANBAO_COOKIE: "${WECHAT_YUANBAO_COOKIE:-}"
+    volumes:
+      - ./data/items:/data/items
+      - ./data/models:/data/models
+      - ./data/secrets:/data/secrets
